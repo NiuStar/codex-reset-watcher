@@ -5,17 +5,17 @@ services:
     command: ["-watch", "-interval", "${WATCH_INTERVAL:-5m}"]
     restart: unless-stopped
     init: true
+    user: "${HERMES_UID:?Set HERMES_UID to the local Hermes .env owner UID}:${HERMES_GID:?Set HERMES_GID to the local Hermes .env owner GID}"
     environment:
       SUB2API_BASE_URL: ${SUB2API_BASE_URL:-https://sub2api.yjkj02.com}
       SUB2API_MODEL: ${SUB2API_MODEL:-gpt-5.6-sol}
       SUB2API_API_KEY: ${SUB2API_API_KEY:?Set SUB2API_API_KEY in private .env}
       X_BEARER_TOKEN: ${X_BEARER_TOKEN:?Set X_BEARER_TOKEN in private .env}
-      FEISHU_APP_ID: ${FEISHU_APP_ID:?Set FEISHU_APP_ID in private .env}
-      FEISHU_APP_SECRET: ${FEISHU_APP_SECRET:?Set FEISHU_APP_SECRET in private .env}
-      FEISHU_CHAT_ID: ${FEISHU_CHAT_ID:?Set FEISHU_CHAT_ID in private .env}
+      HERMES_FEISHU_ENV_PATH: /run/hermes-feishu.env
       WATCH_STATE_PATH: /data/state.json
     volumes:
-      - watcher-state:/data
+      - ${HERMES_FEISHU_ENV_FILE:?Set HERMES_FEISHU_ENV_FILE to the local Hermes .env absolute path}:/run/hermes-feishu.env:ro
+      - ${WATCH_DATA_DIR:?Set WATCH_DATA_DIR to a private writable local state directory}:/data
   classifier:
     build: .
     image: x-reset-watcher:local
@@ -24,5 +24,3 @@ services:
       SUB2API_MODEL: ${SUB2API_MODEL:-gpt-5.6-sol}
       SUB2API_API_KEY: ${SUB2API_API_KEY:?Set SUB2API_API_KEY in private .env}
     profiles: [manual]
-volumes:
-  watcher-state:

@@ -130,14 +130,20 @@ func main() {
 		model = "gpt-5.6-sol"
 	}
 	if *watch || *once {
-		cfg := watchConfig{XBase: "https://api.x.com", XToken: os.Getenv("X_BEARER_TOKEN"), AIBase: base, AIKey: key, Model: model, FeishuBase: "https://open.feishu.cn", AppID: os.Getenv("FEISHU_APP_ID"), AppSecret: os.Getenv("FEISHU_APP_SECRET"), ChatID: os.Getenv("FEISHU_CHAT_ID"), StatePath: os.Getenv("WATCH_STATE_PATH")}
+		cfg := watchConfig{XBase: "https://api.x.com", XToken: os.Getenv("X_BEARER_TOKEN"), AIBase: base, AIKey: key, Model: model, StatePath: os.Getenv("WATCH_STATE_PATH")}
 		if cfg.StatePath == "" {
 			cfg.StatePath = "/data/state.json"
 		}
-		if cfg.XToken == "" || cfg.AIKey == "" || cfg.AppID == "" || cfg.AppSecret == "" || cfg.ChatID == "" {
-			fmt.Fprintln(os.Stderr, "watch requires X_BEARER_TOKEN, SUB2API_API_KEY, FEISHU_APP_ID, FEISHU_APP_SECRET and FEISHU_CHAT_ID")
+		if cfg.XToken == "" || cfg.AIKey == "" {
+			fmt.Fprintln(os.Stderr, "watch requires X_BEARER_TOKEN and SUB2API_API_KEY")
 			os.Exit(2)
 		}
+		feishu, err := loadHermesFeishu(os.Getenv("HERMES_FEISHU_ENV_PATH"))
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "watch requires local Hermes Feishu config:", err)
+			os.Exit(2)
+		}
+		cfg.FeishuBase, cfg.AppID, cfg.AppSecret, cfg.ChatID = feishu.FeishuBase, feishu.AppID, feishu.AppSecret, feishu.ChatID
 		if *interval < time.Minute || *interval > 24*time.Hour {
 			fmt.Fprintln(os.Stderr, "interval must be between 1m and 24h")
 			os.Exit(2)

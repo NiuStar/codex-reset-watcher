@@ -1,6 +1,6 @@
 FROM golang:1.27.1-alpine AS build
 WORKDIR /src
-COPY go.mod main.go watcher.go ./
+COPY go.mod main.go watcher.go hermes_feishu.go ./
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags='-s -w' -o /x-reset-monitor .
 
 FROM alpine:3.22

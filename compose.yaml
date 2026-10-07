@@ -1,0 +1,11 @@
+services:
+  classifier:
+    build: .
+    image: x-reset-classifier:local
+    environment:
+      SUB2API_BASE_URL: ${SUB2API_BASE_URL:-https://sub2api.yjkj02.com}
+      SUB2API_MODEL: ${SUB2API_MODEL:-gpt-5.6-sol}
+      SUB2API_API_KEY: ${SUB2API_API_KEY:?Set SUB2API_API_KEY in your shell or an untracked .env file}
+    # One-shot CLI: use `docker compose run --rm classifier -text '...'`.
+    # Do not `docker compose up -d`: this is not a polling service.
+    profiles: [manual]

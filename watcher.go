@@ -253,7 +253,7 @@ func sendFeishu(ctx context.Context, client *http.Client, c watchConfig, p xPost
 	if auth.Code != 0 || auth.Token == "" {
 		return "", errors.New("Feishu token failed")
 	}
-	labels := map[string]string{"COMPLETED": "宣布重置已处理（不保证个人账户已到账）", "SCHEDULED": "预告将重置", "BANKED": "储备重置已发放", "ISSUE": "重置覆盖异常"}
+	labels := map[string]string{"COMPLETED": "宣布重置已处理（不保证个人账户已到账）", "SCHEDULED": "预告将重置", "BANKED": "储备重置正在发放（不代表个人账户已有可用额度）", "ISSUE": "重置覆盖异常"}
 	msg := fmt.Sprintf("【Codex 重置消息】%s\n账号：@thsottiaux\n范围：%s；用户：%s\n证据：%s\n原帖：https://x.com/thsottiaux/status/%s", labels[d.Category], d.Scope, d.Audience, d.Evidence, p.ID)
 	content, _ := json.Marshal(map[string]string{"text": msg})
 	var sent struct {

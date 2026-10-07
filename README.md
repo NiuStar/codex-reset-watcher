@@ -1,40 +1,31 @@
 # codex-reset-watcher
 
-Go 监控程序：轮询 X 官方 API 中 `@thsottiaux` 的公开帖子，经 sub2api 模型分类；发现新发布的重置完成、预告、储备重置或覆盖异常时，向 Hermes 的飞书 home 群发送文本通知。保留 `-text` 手动分类 CLI。`COMPLETED` 仅表示作者宣布处理完成，**不是个人账户已到账的证明**；`HINT`、`UNRELATED` 不推送，`REVIEW_REQUIRED` 或模型失败不推进游标。
+监控 `@thsottiaux` 重置消息：匿名 RSS 读帖，独立公开预览接口核对作者/ID/原文，sub2api 分类，命中 `COMPLETED`/`SCHEDULED`/`BANKED`/`ISSUE` 才向飞书 home 群通知。`COMPLETED` 只是作者宣布处理完成，不保证你的额度到账。`HINT`/`UNRELATED` 不通知，任何来源/分类/发送异常均失败关闭且不推进游标。
 
-## 部署前提
+## 匿名来源边界
 
-- X 开发者 Bearer Token 能访问用户查询和帖子时间线；没有此凭据不能实时监控。
-- `SUB2API_API_KEY` 可用，默认模型 `gpt-5.6-sol`。
-- **在 Docker 宿主机上**，Hermes 的 `~/.hermes/.env` 包含 `FEISHU_APP_ID`、`FEISHU_APP_SECRET`、`FEISHU_HOME_CHANNEL=oc_...`，以及 `FEISHU_DOMAIN=feishu`（或 `lark`）。飞书应用须已加入该群并有发消息权限。程序启动时直接读这份文件，不把飞书配置复制进本项目 `.env` 或镜像。Hermes 的飞书 home 群即通知目标；变更 home 群须重启 watcher 生效。
-- Docker 宿主机与运行 Hermes 的机器**必须是同一台**，否则 `HERMES_FEISHU_ENV_FILE` 需指定该宿主机上实际存在、经授权访问的 Hermes 配置文件；不得假设本机路径会自动出现在另一台构建/部署机。将整份 Hermes `.env` 只读挂载意味着 watcher 进程有权读取其中其他平台的凭据，应在可信宿主机运行并限制镜像/容器管理权限；不能接受这一权限边界时，应改为独立受限的消息桥，而不是拷贝/提交该文件。
-- 状态目录只供**一个** watcher 使用，不可多副本并行。Docker 管理员可见容器的 X/sub2api 环境变量。
+候选 `https://nitter.meowing.monster/thsottiaux/rss` 是**第三方镜像**，不是 X 官方 API。部署前必须在目标服务器上读到该账号的真实近期条目；镜像可能滞后、限流或下线。新帖逐条从 `https://api.fxtwitter.com/thsottiaux/status/<ID>` 交叉核对 ID、作者和正文（该预览接口亦非官方）。feed 需含旧游标以证明没有滚出窗口；否则停机人工核对，不漏报后继续前进。初次运行仅建最新 ID 基线，不补报旧帖。RSS 默认展示有限条目，回复可能不完整；**无法保证与 X 官方时间线等价**，更不能把第三方镜像的 HTTP 200 当作业务完成。
 
-```bash
-cp .env.example .env
-# 只在不跟踪的 .env 中填 X_BEARER_TOKEN、SUB2API_API_KEY；
-# HERMES_FEISHU_ENV_FILE 指向 Docker 宿主机 Hermes 用户的 ~/.hermes/.env 绝对路径。
-# HERMES_UID/HERMES_GID 填该文件所有者 ID；WATCH_DATA_DIR 填专用绝对路径。
-stat -c '%u %g %a' /absolute/path/to/.hermes/.env   # 最后应为 600
-mkdir -p /absolute/path/to/private/watcher-state
-# 让该目录归同一 UID/GID 所有，权限设为 700；不要修改 Hermes .env 的权限。
-chmod 700 /absolute/path/to/private/watcher-state
-chmod 600 .env
-docker compose build watcher
-docker compose run --rm watcher -once  # 首次只建立最新帖子基线，不补发历史消息
-docker compose up -d watcher          # 此后持续轮询
+## 私密配置与部署
+
+监控配置存放 `config.json`（示例字段如下，**不得填真密钥到文档**）。项目忽略 `config.json`、`private/` 和 `.env`；Docker 构建上下文也忽略它们。私密文件必须为 `0600`，只读挂载进容器，不写到镜像；在目标机上应由专用用户持有，不应挂载整个 Hermes `.env`。失败时容器退出且 `restart: "no"`，须人工排障后再启动；不应自动反复尝试不确定投递。
+
+```json
+{
+  "sub2api_base_url": "https://sub2api.yjkj02.com",
+  "sub2api_api_key": "<private>",
+  "sub2api_model": "gpt-5.6-sol",
+  "feishu_app_id": "<private>",
+  "feishu_app_secret": "<private>",
+  "feishu_home_channel": "<private oc_...>",
+  "feishu_domain": "feishu",
+  "anonymous_rss_url": "https://nitter.meowing.monster/thsottiaux/rss",
+  "anonymous_verify_base_url": "https://api.fxtwitter.com"
+}
 ```
 
-`WATCH_INTERVAL` 默认为 5 分钟（允许 1m–24h）。首次启动会以 X 最新帖子建立 `since_id`，此前帖子不补发；上线前确认这符合预期，并查看 `WATCH_DATA_DIR/state.json` 中的 ID。后续轮询按 `since_id` 完整翻页、从旧到新处理，每帖落盘游标。回复纳入、转帖排除。
+Compose 的 `.env` 仅含 `WATCH_CONFIG_FILE`、`WATCH_DATA_DIR`、`WATCH_UID`、`WATCH_GID`、`WATCH_INTERVAL` 等部署路径/UID；不含密钥。`WATCH_DATA_DIR` 归同一用户所有且 `0700`，一个目录只能运行一个 watcher。先 `docker compose build watcher`，再 `docker compose run --rm watcher -once` 建基线，读回 `state.json`；确认匿名来源持续可用和游标正确后才 `docker compose up -d watcher`。默认间隔 5 分钟。
 
-### 故障与恢复
+通知前先落盘 `pending_id`；如果 Feishu 响应丢失，停机待人工核对，不自动重发。取得业务 `code=0` 且 `message_id` 后才推进游标。不要删状态目录重建基线。手动分类模式 `-text` 通过 Compose 的 `classifier` profile 读取同一私密配置，不把 sub2api 密钥放入环境变量或命令行。
 
-X/分类失败使进程退出并保留游标。准备发送飞书时先保存 `pending_id`；若发送响应丢失或业务结果未确认，**不会盲重试**。先人工检查目标群和原帖，备份 `state.json`，再决定清除 pending（未送达，保留旧 `since_id` 重试）或将 `since_id` 设为该 pending ID（已送达），然后重启。已有 `message_id` 的 pending 会自动恢复而不重发。不要删除状态目录重新建基线，否则会漏掉停机期间的新帖。X API 回溯窗口外的积压不能保证补齐。
-
-```bash
-docker compose logs --no-color watcher
-# 手动分类无需 X/飞书配置：
-docker compose run --rm classifier -id 2107676072871600470 -text 'the reset has been processed'
-```
-
-`go test ./... && go vet ./...` 可在源码目录验证。`v0.1.0` 仍是之前的手动分类版本；新监控功能及 Hermes 配置读取尚未发布新镜像或在线实发验证，不能把单元测试当作通知已送达。
+`go test ./... && go vet ./...` 为本地回归。`v0.1.0` 仅是手动分类版；匿名采集、分类与飞书的真实端到端通知尚需等一条新帖验证，未过门不能声称告警链已验收。

@@ -3,24 +3,21 @@ services:
     build: .
     image: x-reset-watcher:local
     command: ["-watch", "-interval", "${WATCH_INTERVAL:-5m}"]
-    restart: unless-stopped
+    restart: "no"
     init: true
-    user: "${HERMES_UID:?Set HERMES_UID to the local Hermes .env owner UID}:${HERMES_GID:?Set HERMES_GID to the local Hermes .env owner GID}"
+    user: "${WATCH_UID:?Set WATCH_UID to private config owner}:${WATCH_GID:?Set WATCH_GID to private config group}"
     environment:
-      SUB2API_BASE_URL: ${SUB2API_BASE_URL:-https://sub2api.yjkj02.com}
-      SUB2API_MODEL: ${SUB2API_MODEL:-gpt-5.6-sol}
-      SUB2API_API_KEY: ${SUB2API_API_KEY:?Set SUB2API_API_KEY in private .env}
-      X_BEARER_TOKEN: ${X_BEARER_TOKEN:?Set X_BEARER_TOKEN in private .env}
-      HERMES_FEISHU_ENV_PATH: /run/hermes-feishu.env
+      WATCH_CONFIG_PATH: /run/watcher/config.json
       WATCH_STATE_PATH: /data/state.json
     volumes:
-      - ${HERMES_FEISHU_ENV_FILE:?Set HERMES_FEISHU_ENV_FILE to the local Hermes .env absolute path}:/run/hermes-feishu.env:ro
-      - ${WATCH_DATA_DIR:?Set WATCH_DATA_DIR to a private writable local state directory}:/data
+      - ${WATCH_CONFIG_FILE:?Set absolute path to private config}:/run/watcher/config.json:ro
+      - ${WATCH_DATA_DIR:?Set absolute path to state directory}:/data
   classifier:
     build: .
     image: x-reset-watcher:local
+    user: "${WATCH_UID:?Set WATCH_UID to private config owner}:${WATCH_GID:?Set WATCH_GID to private config group}"
     environment:
-      SUB2API_BASE_URL: ${SUB2API_BASE_URL:-https://sub2api.yjkj02.com}
-      SUB2API_MODEL: ${SUB2API_MODEL:-gpt-5.6-sol}
-      SUB2API_API_KEY: ${SUB2API_API_KEY:?Set SUB2API_API_KEY in private .env}
+      WATCH_CONFIG_PATH: /run/watcher/config.json
+    volumes:
+      - ${WATCH_CONFIG_FILE:?Set absolute path to private config}:/run/watcher/config.json:ro
     profiles: [manual]

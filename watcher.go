@@ -14,10 +14,11 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 type watchConfig struct {
-	XBase, XToken, AIBase, AIKey, Model, FeishuBase, AppID, AppSecret, ChatID, StatePath string
+	XBase, XToken, FeedURL, VerifyBase, AIBase, AIKey, Model, FeishuBase, AppID, AppSecret, ChatID, StatePath string
 }
 type watchState struct {
 	UserID          string `json:"user_id"`
@@ -289,12 +290,33 @@ func runWatchTick(ctx context.Context, client *http.Client, c watchConfig) error
 			return fmt.Errorf("pending Feishu send for post %s: reconcile before retry", state.PendingID)
 		}
 	}
-	id, err := xUser(ctx, client, c)
-	if err != nil {
-		return err
+	id := anonymousAuthorID
+	var posts []xPost
+	if c.FeedURL != "" {
+		posts, err = anonymousPosts(ctx, client, c.FeedURL, time.Now())
+		if err != nil {
+			return err
+		}
+	} else {
+		id, err = xUser(ctx, client, c)
+		if err != nil {
+			return err
+		}
 	}
 	if state.UserID != "" && state.UserID != id {
 		return errors.New("X account ID changed; refusing to proceed")
+	}
+	if state.SinceID == "" && c.FeedURL != "" {
+		if err := verifyAnonymousPost(ctx, client, c.VerifyBase, posts[0]); err != nil {
+			return fmt.Errorf("anonymous baseline verification failed: %w", err)
+		}
+		state.UserID = id
+		state.SinceID = posts[0].ID
+		if err := saveWatchState(c.StatePath, state); err != nil {
+			return err
+		}
+		log.Printf("anonymous baseline established since_id=%s (historical posts skipped)", state.SinceID)
+		return nil
 	}
 	if state.SinceID == "" {
 		// First boot only establishes a head baseline; no historical notifications.
@@ -331,12 +353,41 @@ func runWatchTick(ctx context.Context, client *http.Client, c watchConfig) error
 		log.Printf("X baseline established user_id=%s since_id=%s (historical posts skipped)", id, state.SinceID)
 		return nil
 	}
-	posts, err := xPosts(ctx, client, c, id, state.SinceID)
-	if err != nil {
-		return err
+	if c.FeedURL == "" {
+		posts, err = xPosts(ctx, client, c, id, state.SinceID)
+		if err != nil {
+			return err
+		}
+	} else {
+		foundCursor := false
+		for _, p := range posts {
+			if p.ID == state.SinceID {
+				foundCursor = true
+				break
+			}
+		}
+		if !foundCursor {
+			return errors.New("anonymous feed cursor missing: gap or stale mirror; manual reconciliation required")
+		}
+		filtered := make([]xPost, 0, len(posts))
+		for _, p := range posts {
+			if newer(p.ID, state.SinceID) {
+				filtered = append(filtered, p)
+			}
+		}
+		// The feed is newest-first, but cursor advancement must be oldest-first.
+		for i, j := 0, len(filtered)-1; i < j; i, j = i+1, j-1 {
+			filtered[i], filtered[j] = filtered[j], filtered[i]
+		}
+		posts = filtered
 	}
 	state.UserID = id
 	for _, p := range posts {
+		if c.FeedURL != "" {
+			if err := verifyAnonymousPost(ctx, client, c.VerifyBase, p); err != nil {
+				return fmt.Errorf("post %s verify failed: %w", p.ID, err)
+			}
+		}
 		d, err := classify(ctx, client, c.AIBase, c.AIKey, c.Model, Post{ID: p.ID, Author: "thsottiaux", Text: p.Text})
 		if err != nil {
 			return err

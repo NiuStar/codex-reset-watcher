@@ -106,15 +106,16 @@ func main() {
 	id := flag.String("id", "manual", "post ID for audit")
 	parent := flag.String("parent", "", "optional parent post text")
 	watch := flag.Bool("watch", false, "poll X and notify Feishu")
+	probe := flag.Bool("probe", false, "read-only anonymous feed and cross-check latest post")
 	once := flag.Bool("once", false, "run one watch tick (no scheduler)")
 	interval := flag.Duration("interval", 5*time.Minute, "watch polling interval")
 	flag.Parse()
-	if (*watch || *once) && *text != "" || *watch && *once {
-		fmt.Fprintln(os.Stderr, "choose one mode: -watch, -once, or -text")
+	if (*watch || *once || *probe) && *text != "" || *watch && *once || *probe && (*watch || *once) {
+		fmt.Fprintln(os.Stderr, "choose one mode: -probe, -watch, -once, or -text")
 		os.Exit(2)
 	}
-	if !*watch && !*once && *text == "" {
-		fmt.Fprintln(os.Stderr, "usage: x-reset-monitor -watch [-interval 5m] | -once | -text 'post text' [-id POST_ID] [-parent PARENT_TEXT]")
+	if !*probe && !*watch && !*once && *text == "" {
+		fmt.Fprintln(os.Stderr, "usage: x-reset-monitor -probe | -watch [-interval 5m] | -once | -text 'post text' [-id POST_ID] [-parent PARENT_TEXT]")
 		os.Exit(2)
 	}
 	base := os.Getenv("SUB2API_BASE_URL")
@@ -129,21 +130,28 @@ func main() {
 	if model == "" {
 		model = "gpt-5.6-sol"
 	}
-	if *watch || *once {
-		cfg := watchConfig{XBase: "https://api.x.com", XToken: os.Getenv("X_BEARER_TOKEN"), AIBase: base, AIKey: key, Model: model, StatePath: os.Getenv("WATCH_STATE_PATH")}
+	if *probe || *watch || *once {
+		cfg, err := loadPrivateConfig(os.Getenv("WATCH_CONFIG_PATH"))
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "watch private config:", err)
+			os.Exit(2)
+		}
+		cfg.StatePath = os.Getenv("WATCH_STATE_PATH")
+		if *probe {
+			posts, err := anonymousPosts(context.Background(), &http.Client{Timeout: 20 * time.Second}, cfg.FeedURL, time.Now())
+			if err == nil {
+				err = verifyAnonymousPost(context.Background(), &http.Client{Timeout: 20 * time.Second}, cfg.VerifyBase, posts[0])
+			}
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "anonymous probe failed:", err)
+				os.Exit(1)
+			}
+			fmt.Printf("anonymous probe OK: posts=%d latest_id=%s (no state/model/Feishu used)\n", len(posts), posts[0].ID)
+			return
+		}
 		if cfg.StatePath == "" {
 			cfg.StatePath = "/data/state.json"
 		}
-		if cfg.XToken == "" || cfg.AIKey == "" {
-			fmt.Fprintln(os.Stderr, "watch requires X_BEARER_TOKEN and SUB2API_API_KEY")
-			os.Exit(2)
-		}
-		feishu, err := loadHermesFeishu(os.Getenv("HERMES_FEISHU_ENV_PATH"))
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "watch requires local Hermes Feishu config:", err)
-			os.Exit(2)
-		}
-		cfg.FeishuBase, cfg.AppID, cfg.AppSecret, cfg.ChatID = feishu.FeishuBase, feishu.AppID, feishu.AppSecret, feishu.ChatID
 		if *interval < time.Minute || *interval > 24*time.Hour {
 			fmt.Fprintln(os.Stderr, "interval must be between 1m and 24h")
 			os.Exit(2)
@@ -168,6 +176,14 @@ func main() {
 			case <-timer.C:
 			}
 		}
+	}
+	if configPath := os.Getenv("WATCH_CONFIG_PATH"); configPath != "" {
+		cfg, err := loadPrivateConfig(configPath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "private config:", err)
+			os.Exit(2)
+		}
+		base, key, model = cfg.AIBase, cfg.AIKey, cfg.Model
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()

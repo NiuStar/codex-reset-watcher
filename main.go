@@ -11,7 +11,9 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -103,9 +105,16 @@ func main() {
 	text := flag.String("text", "", "exact text of one @thsottiaux post")
 	id := flag.String("id", "manual", "post ID for audit")
 	parent := flag.String("parent", "", "optional parent post text")
+	watch := flag.Bool("watch", false, "poll X and notify Feishu")
+	once := flag.Bool("once", false, "run one watch tick (no scheduler)")
+	interval := flag.Duration("interval", 5*time.Minute, "watch polling interval")
 	flag.Parse()
-	if *text == "" {
-		fmt.Fprintln(os.Stderr, "usage: x-reset-monitor -text 'post text' [-id POST_ID] [-parent PARENT_TEXT]")
+	if (*watch || *once) && *text != "" || *watch && *once {
+		fmt.Fprintln(os.Stderr, "choose one mode: -watch, -once, or -text")
+		os.Exit(2)
+	}
+	if !*watch && !*once && *text == "" {
+		fmt.Fprintln(os.Stderr, "usage: x-reset-monitor -watch [-interval 5m] | -once | -text 'post text' [-id POST_ID] [-parent PARENT_TEXT]")
 		os.Exit(2)
 	}
 	base := os.Getenv("SUB2API_BASE_URL")
@@ -119,6 +128,40 @@ func main() {
 	model := os.Getenv("SUB2API_MODEL")
 	if model == "" {
 		model = "gpt-5.6-sol"
+	}
+	if *watch || *once {
+		cfg := watchConfig{XBase: "https://api.x.com", XToken: os.Getenv("X_BEARER_TOKEN"), AIBase: base, AIKey: key, Model: model, FeishuBase: "https://open.feishu.cn", AppID: os.Getenv("FEISHU_APP_ID"), AppSecret: os.Getenv("FEISHU_APP_SECRET"), ChatID: os.Getenv("FEISHU_CHAT_ID"), StatePath: os.Getenv("WATCH_STATE_PATH")}
+		if cfg.StatePath == "" {
+			cfg.StatePath = "/data/state.json"
+		}
+		if cfg.XToken == "" || cfg.AIKey == "" || cfg.AppID == "" || cfg.AppSecret == "" || cfg.ChatID == "" {
+			fmt.Fprintln(os.Stderr, "watch requires X_BEARER_TOKEN, SUB2API_API_KEY, FEISHU_APP_ID, FEISHU_APP_SECRET and FEISHU_CHAT_ID")
+			os.Exit(2)
+		}
+		if *interval < time.Minute || *interval > 24*time.Hour {
+			fmt.Fprintln(os.Stderr, "interval must be between 1m and 24h")
+			os.Exit(2)
+		}
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		client := &http.Client{Timeout: 90 * time.Second}
+		for {
+			err := runWatchTick(ctx, client, cfg)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "watch stopped:", err)
+				os.Exit(1)
+			}
+			if *once {
+				return
+			}
+			timer := time.NewTimer(*interval)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
+		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()

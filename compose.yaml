@@ -1,11 +1,28 @@
 services:
-  classifier:
+  watcher:
     build: .
-    image: x-reset-classifier:local
+    image: x-reset-watcher:local
+    command: ["-watch", "-interval", "${WATCH_INTERVAL:-5m}"]
+    restart: unless-stopped
+    init: true
     environment:
       SUB2API_BASE_URL: ${SUB2API_BASE_URL:-https://sub2api.yjkj02.com}
       SUB2API_MODEL: ${SUB2API_MODEL:-gpt-5.6-sol}
-      SUB2API_API_KEY: ${SUB2API_API_KEY:?Set SUB2API_API_KEY in your shell or an untracked .env file}
-    # One-shot CLI: use `docker compose run --rm classifier -text '...'`.
-    # Do not `docker compose up -d`: this is not a polling service.
+      SUB2API_API_KEY: ${SUB2API_API_KEY:?Set SUB2API_API_KEY in private .env}
+      X_BEARER_TOKEN: ${X_BEARER_TOKEN:?Set X_BEARER_TOKEN in private .env}
+      FEISHU_APP_ID: ${FEISHU_APP_ID:?Set FEISHU_APP_ID in private .env}
+      FEISHU_APP_SECRET: ${FEISHU_APP_SECRET:?Set FEISHU_APP_SECRET in private .env}
+      FEISHU_CHAT_ID: ${FEISHU_CHAT_ID:?Set FEISHU_CHAT_ID in private .env}
+      WATCH_STATE_PATH: /data/state.json
+    volumes:
+      - watcher-state:/data
+  classifier:
+    build: .
+    image: x-reset-watcher:local
+    environment:
+      SUB2API_BASE_URL: ${SUB2API_BASE_URL:-https://sub2api.yjkj02.com}
+      SUB2API_MODEL: ${SUB2API_MODEL:-gpt-5.6-sol}
+      SUB2API_API_KEY: ${SUB2API_API_KEY:?Set SUB2API_API_KEY in private .env}
     profiles: [manual]
+volumes:
+  watcher-state:

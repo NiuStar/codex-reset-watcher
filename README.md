@@ -1,60 +1,35 @@
 # codex-reset-watcher
 
-这是一个 Go 实现的 **@thsottiaux 帖子重置消息分类器（v0.1.0）**。把已获取的帖子原文交给程序，它直接调用 `https://sub2api.yjkj02.com/v1/chat/completions` 判断是否为 Codex / ChatGPT Work 额度重置消息。
+Go 监控程序：轮询 X 官方 API 中 `@thsottiaux` 的公开帖子，经 sub2api 的可配置模型分类；发现新发布的重置**完成、预告、储备重置或覆盖异常**时，向指定飞书群发送文本通知。保留手动 `-text` 分类 CLI。`COMPLETED` 表示作者宣布处理完成，**不是个人账户已到账的证明**。`HINT`、`UNRELATED` 不推送；`REVIEW_REQUIRED`/模型失败停止且不推进游标。
 
-> **当前不是自动监控服务**：不会抓取 X 帖子、后台轮询、保存游标或发送通知。Docker Compose 仅提供按需运行的容器，不能用 `docker compose up -d` 代替持续监控。X 来源认证、增量采集和告警属于后续工作。
+## 运行前提
 
-## 分类结果
-
-| 分类 | 含义 |
-| --- | --- |
-| `COMPLETED` | 原帖明确宣布额度重置已处理或完成；**不等于你的账户已到账** |
-| `SCHEDULED` | 明确预告未来的额度重置 |
-| `BANKED` | 发放储备重置，可能需要自行领取或使用 |
-| `ISSUE` | 重置未覆盖、延迟或仍在调查 |
-| `HINT` | 条件承诺、投票、暗示等，不能当成完成通知 |
-| `UNRELATED` | 与额度重置无关 |
-| `REVIEW_REQUIRED` | 语义不确定，需要人工核对 |
-
-输出 JSON 包含 `category`、`evidence`（原帖中的精确子串）、`reason`、`scope`、`audience`。`scope` 和 `audience` 只是模型提取的描述，不是账户权益证明。接口出错、返回不完整、JSON 格式错误、证据不在当前原帖中时，程序输出 `REVIEW_REQUIRED` 错误并以非零码退出；不会把失败当成“没有新帖子”。输入仅供分类，程序本身没有验证帖子是否真的由该账号发布。
-
-## 配置
-
-| 配置 | 默认值 | 用途 |
-| --- | --- | --- |
-| `SUB2API_BASE_URL` | `https://sub2api.yjkj02.com` | 仅允许 HTTPS origin；程序追加 `/v1/chat/completions` |
-| `SUB2API_MODEL` | `gpt-5.6-sol` | 识别模型；更换后需验证当前 API 账号是否能调用 |
-| `SUB2API_API_KEY` | 无，必填 | sub2api Bearer Key；不可提交到 Git |
-
-本地 CLI 还兼容环境变量 `HERMES_CUSTOM_SUB2API_YJKJ02_COM_API_KEY` 作为密钥回退来源；Compose **只**传入 `SUB2API_API_KEY`。不要把真实密钥写进 `compose.yaml`、构建参数或日志。
-
-## Docker Compose（单次分类）
-
-准备一份不跟踪的 `.env`，从 `.env.example` 复制后设置 `SUB2API_API_KEY`，也可通过宿主环境变量注入。`.env` 被 `.gitignore` 和 `.dockerignore` 排除。Compose 的 `SUB2API_MODEL` 可直接在 `.env` 中修改。注意 Docker 管理员能看到容器环境变量，部署机访问权限应受控。
+- X 开发者应用的 Bearer Token 能访问用户查询与用户帖子时间线（账户权限及用量/费用以 X 官方为准）；无该凭据就无法实时采集，不能以网页搜索替代。
+- 飞书自建应用有发消息权限，已加进目标群，并取得该群 `chat_id`；缺一不可。
+- `SUB2API_API_KEY` 可用；默认模型 `gpt-5.6-sol`。仅 `.env` 私下提供密钥，文件不得提交 Git；Docker 管理员可见容器环境变量。
+- 稳定持久化 Docker 卷；**一个状态卷只能有一个 watcher 实例**，不能多副本并行。
 
 ```bash
-# 在仓库目录中
-docker compose build classifier
-docker compose run --rm classifier -id 2107676072871600470 \
-  -text 'Therefore ... the reset has been processed. Enjoy!'
+cp .env.example .env
+# 私下填写 SUB2API_API_KEY、X_BEARER_TOKEN、FEISHU_APP_ID、FEISHU_APP_SECRET、FEISHU_CHAT_ID
+chmod 600 .env
+docker compose build watcher
+docker compose run --rm watcher -once   # 仅建最新帖基线，不追发历史通知
+docker compose up -d watcher           # 之后持续轮询；默认每 5 分钟
 ```
 
-需要父帖语境时加 `-parent '父帖原文'`。Compose 使用 `manual` profile，让普通 `docker compose up -d` 不会误将一次性 CLI 当作守护程序。当前镜像没有暴露端口、定时器或告警接口。**未验证 Docker Hub 镜像前，不要假定有公开可拉取的镜像**；此处由本地源码构建。
+`WATCH_INTERVAL` 可在 `.env` 中配置（1m–24h）。若不想预先建基线，`up -d` 的首次轮询也会建基线。首次启动时以 X 最近一页的最新帖子为 `since_id`，**此前所有帖子都不会补发**；应检查 `/data/state.json` 中的 `user_id`、`since_id`。状态文件通过原子替换落盘；后续每轮以 `since_id` 请求新帖并翻页，全部取完再按时间从旧到新逐条分类/通知/推进游标。X 帖子只验证作者 ID 和可用文本；回复纳入、转帖排除；引用、上下文不足的语义结论应视为模型判断而非账户事实。
 
-## 本机运行与验证
+示例消息：分类标签、范围/对象（若未知则为空）、原帖证据和 `https://x.com/thsottiaux/status/<ID>`。飞书返回 `code=0` 且 `message_id` 非空才记作成功；非目标帖子也逐条推进游标。
 
-需要 Go 1.23 或更高版本。
+### 失败与恢复
+
+X/分类失败会让进程以非零状态退出；Compose 可重启，游标留在未处理帖子之前。**飞书请求一旦准备发送就先写 `pending_id`**。响应丢失、业务错误或崩溃后，若仍有无 `message_id` 的 `pending_id`，进程会停机，不会盲重发；先人工检查目标群及 `pending_id` 对应原帖，再备份状态文件并作明确恢复决定（若消息已送达，可把 `since_id` 设为该 `pending_id`，清空 `pending_id`/`pending_category` 后再启动；未送达时清空 `pending_id`/`pending_category` 并保留原 `since_id`，下轮重试）。不要随意删掉整个状态卷，否则将重建基线并可能漏掉停机期间的帖子。已有 `message_id` 的 pending 表示发出成功但提交游标中断，程序自动完成恢复，不会再次推送。遇到批量积压或 X 只返回其有限时间窗口内的帖子时，超出 API 可回溯范围的内容无法保证补齐；需人工审计。
 
 ```bash
-export SUB2API_API_KEY='由部署环境安全注入的密钥'
-go run . -id 2107676072871600470 \
-  -text 'Therefore ... the reset has been processed. Enjoy!'
-go test ./...
-go vet ./...
+docker compose logs --no-color watcher
+# 手动分类仍可用，不需要 X/飞书凭据：
+docker compose run --rm classifier -id 2107676072871600470 -text 'the reset has been processed'
 ```
 
-预期这条帖子被分类为 `COMPLETED`，但模型回复文本可能随服务版本变化。`-id` 是审计用的输入值，并非程序从 X 校验的 ID；输入内容和父帖会发送给所配置的 API 服务。错误时请查看退出状态；不要把失败或不确定结果当成明确重置。
-
-## 发布范围与后续
-
-`v0.1.0` 仅包含 Go 分类器、测试、Dockerfile 与手动执行的 Compose 配置。要成为真正的 watcher，下一步需接入 X 官方 API 获取并校验账号 ID 和作者，包含回复、分页及增量游标，落盘后再推进游标；随后加入事件去重、告警渠道和采集失败健康告警。没有 X 权限或通知目标时，不能声称这些功能已上线。
+本机验证：`go test ./... && go vet ./...`。`v0.1.0` 为先前仅支持手动分类的版本；仓库本次改动尚未发布新版本/镜像，也未接入真实 X+飞书凭据做端到端在线验证，切勿把本地测试当作飞书实发。
